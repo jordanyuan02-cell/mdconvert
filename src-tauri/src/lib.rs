@@ -160,8 +160,98 @@ fn find_via_where(exec_name: &str) -> Option<PathBuf> {
     }
 }
 
+/// Embedded reference.docx template for Pandoc DOCX styling.
+/// Compiled into the binary via include_bytes! to work reliably
+/// in both `tauri dev` and production builds.
+/// Uses tblStylePr w:type="firstRow" for header cell shading + bold.
+const REFERENCE_DOCX_BYTES: &[u8] = include_bytes!("../resources/reference.docx");
+
+/// Pre-process markdown to convert \ce{...} (mhchem) to standard LaTeX
+/// that Pandoc can render in DOCX output.
+///
+/// Examples:
+///   \ce{H2O}  → \mathrm{H_{2}O}
+///   \ce{Na+}  → \mathrm{Na^{+}}
+///   \ce{e-}   → \mathrm{e^{-}}
+///   \ce{2H2 + O2 -> 2H2O} → 2\mathrm{H_{2}} + \mathrm{O_{2}} \rightarrow 2\mathrm{H_{2}O}
+fn preprocess_chemistry(markdown: &str) -> String {
+    use regex::Regex;
+
+    let ce_re = Regex::new(r"\\ce\{([^}]*)\}").unwrap();
+    ce_re
+        .replace_all(markdown, |caps: &regex::Captures| {
+            let inner = caps[1].trim();
+            convert_ce_inner(inner)
+        })
+        .to_string()
+}
+
+/// Convert the inner content of a \ce{...} command to standard LaTeX.
+fn convert_ce_inner(inner: &str) -> String {
+    // Replace chemical arrows with LaTeX equivalents
+    let s = inner
+        .replace("->", " \\rightarrow ")
+        .replace("=>", " \\Rightarrow ")
+        .replace("<=>", " \\rightleftharpoons ");
+
+    let tokens: Vec<&str> = s.split_whitespace().collect();
+    let mut result: Vec<String> = Vec::new();
+
+    for token in tokens {
+        if token == "\\rightarrow"
+            || token == "\\Rightarrow"
+            || token == "\\rightleftharpoons"
+            || token == "+"
+        {
+            result.push(token.to_string());
+        } else if token.starts_with('\\') {
+            // Already a LaTeX command, pass through
+            result.push(token.to_string());
+        } else {
+            // Chemical formula – wrap in \mathrm{} with proper subscripts/charges
+            result.push(wrap_formula(token));
+        }
+    }
+
+    result.join(" ")
+}
+
+/// Wrap a single chemical formula token in \mathrm{} with proper formatting.
+fn wrap_formula(token: &str) -> String {
+    use regex::Regex;
+
+    // Split leading coefficient: "2H2O" → ("2", "H2O")
+    let (coeff, formula) = {
+        let digit_end = token.find(|c: char| !c.is_ascii_digit()).unwrap_or(0);
+        if digit_end > 0 {
+            (&token[..digit_end], &token[digit_end..])
+        } else {
+            ("", token)
+        }
+    };
+
+    if formula.is_empty() {
+        return coeff.to_string();
+    }
+
+    // Add subscripts: H2O → H_{2}O
+    let subscript_re = Regex::new(r"([A-Za-z])(\d+)").unwrap();
+    let with_sub = subscript_re.replace_all(formula, |caps: &regex::Captures| {
+        format!("{}_{{{}}}", &caps[1], &caps[2])
+    });
+
+    // Handle charge at end: Na+ → Na^{+}, e- → e^{-}
+    let charge_re = Regex::new(r"([A-Za-z])([+-])$").unwrap();
+    let with_charge = charge_re.replace_all(&with_sub, |caps: &regex::Captures| {
+        format!("{}^{{{}}}", &caps[1], &caps[2])
+    });
+
+    format!("{}\\mathrm{{{}}}", coeff, with_charge)
+}
+
 #[tauri::command]
 async fn export_docx(
+    _app_handle: tauri::AppHandle,
     markdown: String,
     output_path: String,
     settings: Option<ExportSettings>,
@@ -177,21 +267,34 @@ async fn export_docx(
     let temp_dir = std::env::temp_dir().join(format!("md2word_{}", chrono_now()));
     fs::create_dir_all(&temp_dir).map_err(|e| format!("无法创建临时目录: {}", e))?;
 
-    // Write the markdown to temp file
+    // Pre-process markdown: convert \ce{...} to standard LaTeX
+    let processed_markdown = preprocess_chemistry(&markdown);
+
+    // Write the processed markdown to temp file
     let input_md_path = temp_dir.join("input.md");
-    fs::write(&input_md_path, &markdown).map_err(|e| format!("无法写入输入文件: {}", e))?;
+    fs::write(&input_md_path, &processed_markdown)
+        .map_err(|e| format!("无法写入输入文件: {}", e))?;
+
+    // Write embedded reference.docx to temp dir (works in both dev and production)
+    let reference_docx_path = temp_dir.join("reference.docx");
+    fs::write(&reference_docx_path, REFERENCE_DOCX_BYTES)
+        .map_err(|e| format!("无法写入样式模板文件: {}", e))?;
 
     // Build pandoc command
     let mut cmd = Command::new(&pandoc_path);
     cmd.arg(input_md_path.to_str().unwrap())
         .arg("-f")
-        .arg("markdown+tex_math_dollars+tex_math_single_backslash+pipe_tables+multiline_tables+fenced_code_blocks+task_lists+grid_tables")
+        .arg("markdown+tex_math_dollars+tex_math_single_backslash+pipe_tables+multiline_tables+fenced_code_blocks+task_lists+grid_tables+hard_line_breaks")
         .arg("-t")
         .arg("docx")
         .arg("-s")
         .arg("--resource-path=.")
         .arg("-o")
-        .arg(&output_path);
+        .arg(&output_path)
+        // Use embedded reference.docx for consistent table/code styles
+        .arg(format!("--reference-doc={}", reference_docx_path.display()))
+        // Use tango syntax highlighting style for code blocks (Pandoc 3.10+)
+        .arg("--syntax-highlighting=tango");
 
     if settings.enable_toc {
         cmd.arg("--toc");
@@ -259,46 +362,12 @@ async fn export_pdf_with_edge(
     std::fs::create_dir_all(&work_dir)
         .map_err(|e| format!("无法创建 PDF 临时目录: {}", e))?;
 
-    // ── Build full HTML document ─────────────────────────────────────
-    let full_html = format!(
-        r#"<!doctype html>
-<html>
-<head>
-<meta charset="utf-8">
-<title>PDF Export</title>
-<style>
-@page {{
-  size: A4;
-  margin: 25mm;
-}}
-body {{
-  font-family: "Microsoft YaHei", "SimSun", "Times New Roman", serif;
-  line-height: 1.6;
-  font-size: 12pt;
-}}
-table {{
-  border-collapse: collapse;
-  width: 100%;
-}}
-td, th {{
-  border: 1px solid #333;
-  padding: 6px;
-}}
-pre {{
-  white-space: pre-wrap;
-  background: #f5f5f5;
-  padding: 10px;
-}}
-</style>
-</head>
-<body>
-{}
-</body>
-</html>"#,
-        html_content
-    );
-
     // ── Write HTML to file ───────────────────────────────────────────
+    // NOTE: `html_content` from the frontend is already a complete HTML
+    // document (with KaTeX CSS, print styles, etc.), so we write it
+    // directly without any wrapping.
+    let full_html = &html_content;
+
     let html_path = work_dir.join("input.html");
     std::fs::write(&html_path, &full_html)
         .map_err(|e| format!("写入 HTML 失败: {}", e))?;
@@ -378,6 +447,7 @@ pre {{
     Ok(())
 }
 
+
 #[tauri::command]
 fn check_pandoc() -> bool {
     find_pandoc().is_some()
@@ -406,7 +476,6 @@ fn chrono_now() -> String {
     format!("{}", now.as_millis())
 }
 
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())

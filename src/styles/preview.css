@@ -208,9 +208,9 @@
   margin: 16pt 0;
   text-align: center;
   overflow-x: auto;
-  overflow-y: hidden;
-  padding: 4pt 0;
+  padding: 24pt 0 28pt 0;
   page-break-inside: avoid;
+  max-width: 100%;
 }
 
 /* Mermaid diagrams */

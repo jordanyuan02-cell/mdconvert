@@ -2,6 +2,8 @@ import MarkdownIt from 'markdown-it';
 import hljs from 'highlight.js';
 import texmath from 'markdown-it-texmath';
 import katex from 'katex';
+// Load mhchem extension to register \ce{}, \pu{} macros with KaTeX
+import 'katex/contrib/mhchem';
 
 let mdInstance: MarkdownIt | null = null;
 
@@ -23,10 +25,10 @@ export function getMarkdownRenderer(): MarkdownIt {
       return `<pre class="hljs"><code>${mdInstance!.utils.escapeHtml(str)}</code></pre>`;
     },
   })
-  // Integrate KaTeX via markdown-it-texmath — renders \(...\) and \[...\] during the parsing pipeline
+  // Integrate KaTeX via markdown-it-texmath — renders $...$, $$...$$, \(...\), and \[...\]
   .use(texmath, {
     engine: katex,
-    delimiters: 'brackets',
+    delimiters: ['dollars', 'brackets'],
     katexOptions: {
       throwOnError: false,
       output: 'html',

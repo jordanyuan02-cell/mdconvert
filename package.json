@@ -1,11 +1,13 @@
 {
   "name": "markdown-to-word-app",
   "private": true,
-  "version": "0.1.0",
+  "version": "2.0.0",
   "type": "module",
   "scripts": {
+    "encode-fonts": "node scripts/encode-katex-fonts.js",
+    "predev": "node scripts/encode-katex-fonts.js",
     "dev": "vite",
-    "build": "tsc && vite build",
+    "build": "node scripts/encode-katex-fonts.js && tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri"
   },
@@ -41,5 +43,8 @@
     "@vitejs/plugin-react": "^4.6.0",
     "typescript": "~5.8.3",
     "vite": "^7.0.4"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["esbuild"]
   }
 }

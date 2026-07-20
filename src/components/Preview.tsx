@@ -3,10 +3,21 @@ import katex from 'katex';
 import { renderMarkdown } from '../lib/markdownRenderer';
 import { preprocessMarkdown } from '../lib/preprocessMarkdown';
 import { renderMermaidToSvg } from '../lib/mermaidRenderer';
+import { installDebugLogger, logKatexRender, getDebugEntries, renderDebugOverlay } from '../lib/debugLogger';
 import '../styles/preview.css';
 
 // Import KaTeX CSS
 import 'katex/dist/katex.min.css';
+// Override KaTeX @font-face sources with CDN URLs
+// (fallback if CDN is accessible)
+import '../styles/katex-font-fix.css';
+// Embed all KaTeX fonts as base64 data URLs — bypasses Tauri v2's
+// custom protocol MIME type issues for .woff2 files in production builds.
+// This is the PRIMARY font source; CDN and local paths are secondary.
+import '../styles/katex-base64.css';
+
+// Install global debug error logger once at module level
+installDebugLogger();
 
 interface PreviewProps {
   markdown: string;
@@ -52,6 +63,14 @@ export default function Preview({ markdown, onStatsChange, onWarningsChange }: P
 
     // Render code highlighting
     renderCodeHighlight(contentRef.current);
+
+    // Append debug overlay (visible when errors exist)
+    const debugHtml = renderDebugOverlay();
+    if (debugHtml) {
+      const existing = document.getElementById('debug-overlay');
+      if (existing) existing.remove();
+      contentRef.current.insertAdjacentHTML('beforeend', debugHtml);
+    }
   }, [markdown, onStatsChange, onWarningsChange]);
 
   useEffect(() => {
@@ -88,8 +107,11 @@ function renderKaTeX(container: HTMLElement) {
     // Display math: $$...$$ → KaTeX
     newHtml = newHtml.replace(/\$\$([\s\S]*?)\$\$/g, (_, formula: string) => {
       try {
-        return katex.renderToString(formula.trim(), { displayMode: true, throwOnError: false, output: 'html' });
-      } catch {
+        const result = katex.renderToString(formula.trim(), { displayMode: true, throwOnError: false, output: 'html' });
+        logKatexRender(true, formula);
+        return result;
+      } catch (e) {
+        logKatexRender(false, formula, String(e));
         return `<span class="katex-error" style="color:red">公式错误: ${formula}</span>`;
       }
     });
@@ -98,8 +120,11 @@ function renderKaTeX(container: HTMLElement) {
     if (newHtml.includes('$')) {
       newHtml = newHtml.replace(/\$(.+?)\$/g, (_, formula: string) => {
         try {
-          return katex.renderToString(formula.trim(), { displayMode: false, throwOnError: false, output: 'html' });
-        } catch {
+          const result = katex.renderToString(formula.trim(), { displayMode: false, throwOnError: false, output: 'html' });
+          logKatexRender(true, formula);
+          return result;
+        } catch (e) {
+          logKatexRender(false, formula, String(e));
           return _;
         }
       });

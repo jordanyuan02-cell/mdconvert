@@ -1,6 +1,19 @@
 import { invoke } from '@tauri-apps/api/core';
 import { save } from '@tauri-apps/plugin-dialog';
 import { renderMarkdown } from './markdownRenderer';
+import katexCssRaw from 'katex/dist/katex.min.css?raw';
+
+/** Version of KaTeX being used — must match what's in node_modules */
+const KATEX_VERSION = '0.16.47';
+/** Base CDN URL for KaTeX fonts */
+const KATEX_FONTS_CDN = `https://cdn.jsdelivr.net/npm/katex@${KATEX_VERSION}/dist/fonts/`;
+
+/**
+ * Inline-friendly KaTeX CSS with absolute font URLs (CDN).
+ * Vite's `?raw` import returns the file content as-is without URL rewriting,
+ * so we replace relative `url(fonts/...)` with absolute CDN URLs.
+ */
+const katexCssInline = katexCssRaw.replace(/url\(fonts\//g, `url(${KATEX_FONTS_CDN}`);
 
 export interface ExportPdfOptions {
   markdown: string;
@@ -228,12 +241,9 @@ body {
     print-color-adjust: exact;
   }
 }
-</style>
-<!-- KaTeX CSS 内联样式 — 避免 CDN 加载失败导致渲染阻塞 -->
-<style>
-.katex { font: normal 1.21em KaTeX_Main,Times New Roman,serif; line-height:1.2; text-indent:0; }
-.katex-display { margin:12pt 0; page-break-inside:avoid; overflow-x:auto; overflow-y:hidden; }
-</style>
+<!-- KaTeX CSS — 内联样式（使用 ?raw 导入 + 字体 URL 重写为绝对 CDN 路径），
+     避免无头浏览器从 file:// URL 加载 CDN 外部样式表失败的问题 -->
+<style>${katexCssInline}</style>
 </head>
 <body>
 <div class="markdown-body">
